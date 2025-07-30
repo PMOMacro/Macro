@@ -1,0 +1,956 @@
+#Requires AutoHotkey v2.0
+#SingleInstance Force
+
+keyboardLayout := ""
+movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+
+barLX := 0
+barLY := 0
+barRX := 0
+barRY := 0
+
+waterX := A_ScreenWidth // 2
+waterY := A_ScreenHeight // 2
+
+colorEmpty := 0x8C8C8C
+colorFill  := 0xF1DC6B
+
+redWarningX := 964
+redWarningY := 740
+redWarningColor := 0x750906
+
+isMacroRunning := false
+isPaused := false
+isAutoSelling := false
+digHoldMs := 0
+walkMs := 0
+walkBackMs := 0
+
+inventoryKey := "g"
+autoSellEnabled := false
+autoSellInterval := 100
+lastSellTime := 0
+sellCycleCount := 0  ; New: Track cycles for selling
+sellEveryNCycles := 5  ; New: Sell every N cycles instead of time-based
+
+; UI Navigation settings
+uiNavigationKey := "\"  ; Default UI navigation key
+useUINavigation := false  ; Toggle for UI navigation vs clicking
+uiNavVariant := 1  ; 1 or 2 for different navigation patterns
+
+settingsFile := "settings.ini"
+
+GUI_BG_COLOR := 0x1E1E1E
+GUI_CONTROL_BG := 0x2D2D2D
+GUI_TEXT_COLOR := 0xFFFFFF
+GUI_ACCENT_COLOR := 0x0078D4
+GUI_SUCCESS_COLOR := 0x4CAF50
+GUI_WARNING_COLOR := 0xFF9800
+GUI_DANGER_COLOR := 0xF44336
+GUI_BORDER_COLOR := 0x404040
+
+SendDiscordWebhook(message, title := "Prospect Macro Alert", color := 16711808, fields := "", footer := "Prospect V1.6 | Developed by Nicke and Timzzz") {
+    global settingsFile
+    webhookUrl := IniRead(settingsFile, "Discord", "webhook", "")
+    webhookEnabled := IniRead(settingsFile, "Discord", "enabled", 1)
+    if (webhookUrl = "" || webhookEnabled = "0" || webhookEnabled = 0) {
+        return false
+    }
+    embed := '{"title": "' title '","description": "' message '","color": ' color
+    if (fields != "") {
+        embed .= ',"fields": ' fields
+    }
+    embed .= ',"footer": {"text": "' footer '"}}'
+    payload := '{"embeds": [' embed ']}'
+    http := ComObject("WinHttp.WinHttpRequest.5.1")
+    http.Open("POST", webhookUrl, false)
+    http.SetRequestHeader("Content-Type", "application/json")
+    http.Send(payload)
+    return http.Status
+}
+
+DetectKeyboardLayout() {
+    global keyboardLayout, movementKeys
+    layout := DllCall("GetKeyboardLayout", "UInt", 0, "Ptr")
+    layoutID := layout & 0xFFFF
+    
+    switch layoutID {
+        case 0x0407:
+            keyboardLayout := "German (QWERTZ)"
+            movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+        case 0x040C:
+            keyboardLayout := "French (AZERTY)"
+            movementKeys := {forward: "z", back: "s", left: "q", right: "d"}
+        case 0x0809:
+            keyboardLayout := "UK English (QWERTY)"
+            movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+        case 0x0409:
+            keyboardLayout := "US English (QWERTY)"
+            movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+        case 0x0410:
+            keyboardLayout := "Italian (QWERTY)"
+            movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+        case 0x0413:
+            keyboardLayout := "Dutch (QWERTY)"
+            movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+        case 0x040A:
+            keyboardLayout := "Spanish (QWERTY)"
+            movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+        case 0x041D:
+            keyboardLayout := "Swedish (QWERTY)"
+            movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+        case 0x0414:
+            keyboardLayout := "Norwegian (QWERTY)"
+            movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+        case 0x0406:
+            keyboardLayout := "Danish (QWERTY)"
+            movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+        default:
+            keyboardLayout := "Unknown (Using QWERTY defaults)"
+            movementKeys := {forward: "w", back: "s", left: "a", right: "d"}
+    }
+}
+
+GetLocalizedKey(keyName) {
+    global movementKeys
+    switch keyName {
+        case "forward":
+            return movementKeys.forward
+        case "back":
+            return movementKeys.back
+        case "left":
+            return movementKeys.left
+        case "right":
+            return movementKeys.right
+        default:
+            return keyName
+    }
+}
+
+SendLocalizedKey(keyName, action := "") {
+    localizedKey := GetLocalizedKey(keyName)
+    
+    if (action = "down") {
+        Send("{" . localizedKey . " down}")
+    } else if (action = "up") {
+        Send("{" . localizedKey . " up}")
+    } else {
+        Send("{" . localizedKey . "}")
+    }
+}
+
+LoadSettings() {
+    global digHoldMs, walkMs, walkBackMs, barLX, barLY, barRX, barRY
+    global inventoryKey, autoSellEnabled, autoSellInterval, settingsFile, sellEveryNCycles
+    global uiNavigationKey, useUINavigation, uiNavVariant
+    
+    if FileExist(settingsFile) {
+        try {
+            digHoldMs := IniRead(settingsFile, "General", "digHoldMs", 0)
+            walkMs := IniRead(settingsFile, "General", "walkMs", 0)
+            walkBackMs := IniRead(settingsFile, "General", "walkBackMs", 0)
+            barLX := IniRead(settingsFile, "Bar", "barLX", 0)
+            barLY := IniRead(settingsFile, "Bar", "barLY", 0)
+            barRX := IniRead(settingsFile, "Bar", "barRX", 0)
+            barRY := IniRead(settingsFile, "Bar", "barRY", 0)
+            inventoryKey := IniRead(settingsFile, "AutoSell", "inventoryKey", "g")
+            autoSellEnabled := IniRead(settingsFile, "AutoSell", "enabled", false)
+            autoSellInterval := IniRead(settingsFile, "AutoSell", "interval", 10000)
+            sellEveryNCycles := IniRead(settingsFile, "AutoSell", "sellEveryNCycles", 5)
+            uiNavigationKey := IniRead(settingsFile, "AutoSell", "uiNavigationKey", "\")
+            useUINavigation := IniRead(settingsFile, "AutoSell", "useUINavigation", false)
+            uiNavVariant := IniRead(settingsFile, "AutoSell", "uiNavVariant", 1)
+        } catch Error as e {
+            MsgBox("Failed to load settings: " . e.message, "Warning", "OK")
+        }
+    }
+}
+
+SaveToFile() {
+    global digHoldMs, walkMs, walkBackMs, barLX, barLY, barRX, barRY
+    global inventoryKey, autoSellEnabled, autoSellInterval, settingsFile, sellEveryNCycles
+    global uiNavigationKey, useUINavigation, uiNavVariant
+    
+    try {
+        IniWrite(digHoldMs, settingsFile, "General", "digHoldMs")
+        IniWrite(walkMs, settingsFile, "General", "walkMs")
+        IniWrite(walkBackMs, settingsFile, "General", "walkBackMs")
+        IniWrite(barLX, settingsFile, "Bar", "barLX")
+        IniWrite(barLY, settingsFile, "Bar", "barLY")
+        IniWrite(barRX, settingsFile, "Bar", "barRX")
+        IniWrite(barRY, settingsFile, "Bar", "barRY")
+        IniWrite(inventoryKey, settingsFile, "AutoSell", "inventoryKey")
+        IniWrite(autoSellEnabled, settingsFile, "AutoSell", "enabled")
+        IniWrite(autoSellInterval, settingsFile, "AutoSell", "interval")
+        IniWrite(sellEveryNCycles, settingsFile, "AutoSell", "sellEveryNCycles")
+        IniWrite(uiNavigationKey, settingsFile, "AutoSell", "uiNavigationKey")
+        IniWrite(useUINavigation, settingsFile, "AutoSell", "useUINavigation")
+        IniWrite(uiNavVariant, settingsFile, "AutoSell", "uiNavVariant")
+        MsgBox("Settings saved successfully!", "Success", "OK")
+    } catch Error as e {
+        MsgBox("Failed to save settings: " . e.message, "Error", "OK")
+    }
+}
+
+f1::StartMacro()
+f2::TogglePause()
+f3::ExitScript()
+
+ReleaseAllInputs() {
+    SendLocalizedKey("forward", "up")
+    SendLocalizedKey("back", "up")
+    SendLocalizedKey("left", "up")
+    SendLocalizedKey("right", "up")
+    Send("{LButton up}")
+}
+
+StartMacro() {
+    global isMacroRunning, isPaused, digHoldMs, lastSellTime, sellCycleCount, autoSellEnabled
+    if digHoldMs <= 0 {
+        MsgBox("Set 'Perfect dig (ms)' first!", "Setup Required", "OK")
+        return
+    }
+    if !isMacroRunning {
+        isMacroRunning := true
+        isPaused := false
+        lastSellTime := A_TickCount
+        sellCycleCount := 0  ; Reset cycle counter
+        
+        ToolTip("🍳 Equipping pan...", 10, 10)
+        Send("{1}")
+        Sleep(500)
+        ToolTip()
+        SendDiscordWebhook("Started - Pan equipped", "Prospect V1.6 - Nicke and Timzzz", 0x00FF00)
+        
+        RunMacro()
+    }
+}
+
+TogglePause() {
+    global isMacroRunning, isPaused, isAutoSelling
+    if isMacroRunning {
+        isPaused := !isPaused
+        ReleaseAllInputs()
+        ToolTip()
+        if isPaused {
+            isAutoSelling := false
+            SendDiscordWebhook("Paused", "Prospect V1.6 - Nicke and Timzzz", 0xFF003C)
+        } else {
+            SendDiscordWebhook("Re-Enabled", "Prospect V1.6 - Nicke and Timzzz", 0x00FF00)
+        }
+    }
+}
+
+ExitScript() {
+    global isMacroRunning, isAutoSelling
+    isMacroRunning := false
+    isAutoSelling := false
+    ReleaseAllInputs()
+    ToolTip()
+    SendDiscordWebhook("Exited", "Prospect V1.6 - Nicke and Timzzz", 0xFF003C)
+    SetTimer(() => ExitApp(), -500)
+}
+
+CalibrateMovement() {
+    global walkMs, isMacroRunning, isPaused
+    if walkMs <= 0
+        return
+    
+    ToolTip("🔧 Calibrating movement balance...", 10, 10)
+    
+    Loop 3 {
+        if !isMacroRunning || isPaused
+            break
+        
+        SendLocalizedKey("forward", "down")
+        Sleep(walkMs)
+        SendLocalizedKey("forward", "up")
+        Sleep(200)
+        
+        SendLocalizedKey("back", "down")
+        Sleep(walkMs)
+        SendLocalizedKey("back", "up")
+        Sleep(200)
+    }
+    
+    ToolTip()
+    Sleep(500)
+}
+
+BalancedWalk(direction, duration) {
+    global isPaused, isMacroRunning, isAutoSelling
+    
+    if duration <= 0 || isAutoSelling
+        return 0
+    
+    startTime := A_TickCount
+    SendLocalizedKey(direction, "down")
+    
+    while ((A_TickCount - startTime) < duration && !isPaused && isMacroRunning) {
+        Sleep(1)
+    }
+    
+    SendLocalizedKey(direction, "up")
+    endTime := A_TickCount
+    actualTime := endTime - startTime
+    
+    directionText := (direction = "forward") ? "Framåt" : "Bakåt"
+    ToolTip("🚶 " . directionText . ": " . actualTime . "ms", 10, 50)
+    Sleep(300)
+    ToolTip()
+    
+    return actualTime
+}
+
+; NEW: Check if it's time to auto-sell based on cycles
+ShouldAutoSell() {
+    global autoSellEnabled, sellEveryNCycles, sellCycleCount, isAutoSelling
+    
+    if !autoSellEnabled
+        return false
+    if isAutoSelling
+        return false
+    
+    ; Check if current cycle count is divisible by sellEveryNCycles
+    return (sellCycleCount > 0 && (Mod(sellCycleCount, sellEveryNCycles) = 0))
+}
+
+PerformAutoSell() {
+    global inventoryKey, isAutoSelling, isPaused
+    global uiNavigationKey, uiNavVariant
+    
+    if isAutoSelling {
+        return false
+    }
+    
+    isAutoSelling := true
+    ToolTip("🛒 Auto-selling...", 10, 10)
+
+    ; STEP 1: Unequip pan FIRST
+    ToolTip("🍳 Unequipping pan...", 10, 30)
+    Send("{1}")
+    Sleep(800)  ; Wait for unequip animation
+    
+    if isPaused {
+        isAutoSelling := false
+        ToolTip("Paused", 10, 10)
+        return false
+    }
+
+    ; STEP 2: Open inventory SECOND
+    ToolTip("📦 Opening inventory...", 10, 30)
+    Send("{" . inventoryKey . "}")
+    Sleep(1000)  ; Wait for inventory to open
+    
+    if isPaused {
+        isAutoSelling := false
+        ToolTip("Paused", 10, 10)
+        return false
+    }
+
+    ReleaseAllInputs()
+    Sleep(200)  ; Brief pause after releasing inputs
+    
+    if isPaused {
+        isAutoSelling := false
+        ToolTip("Paused", 10, 10)
+        return false
+    }
+
+    ; STEP 3: UI Navigation selling method
+    ToolTip("🧭 Using UI Navigation to sell...", 10, 30)
+    
+    ; Enable UI Navigation
+    Send("{" . uiNavigationKey . "}")
+    Sleep(300)
+    
+    if uiNavVariant = 1 {
+        ; Variant 1: Down once, Enter
+        ToolTip("🧭 Variant 1: Down → Enter", 10, 50)
+        Send("{Down}")
+        Sleep(200)
+        Send("{Enter}")
+        Sleep(500)
+    } else {
+        ; Variant 2: Down 2, Right 4, Up 1, Enter
+        ToolTip("🧭 Variant 2: Complex navigation", 10, 50)
+        Send("{Down 2}")
+        Sleep(200)
+        Send("{Right 4}")
+        Sleep(200)
+        Send("{Up}")
+        Sleep(200)
+        Send("{Enter}")
+        Sleep(500)
+    }
+    
+    ; Disable UI Navigation
+    Send("{" . uiNavigationKey . "}")
+    Sleep(300)
+    
+    ; STEP 4: Re-equip pan
+    ToolTip("🍳 Re-equipping pan...", 10, 30)
+    Send("{1}")
+    Sleep(600)  ; Wait for equip animation
+
+    ; STEP 5: Close inventory and finish
+    ToolTip("📦 Closing inventory...", 10, 30)
+    Send("{" . inventoryKey . "}")
+    Sleep(600)
+    ToolTip()
+    
+    Sleep(300)  ; Brief final pause
+    SendDiscordWebhook("Auto-sell completed using UI Navigation (Variant " . uiNavVariant . ")! Pan restored. Continuing macro...", "Prospect V1.6 - Nicke and Timzzz", 0xFFFFFF)
+    isAutoSelling := false
+    return true
+}
+
+RunMacro() {
+    global isMacroRunning, isPaused, walkMs, isAutoSelling, sellCycleCount
+    firstCycle := true
+    sellCycleCount := 0
+    
+    while isMacroRunning {
+        if isPaused {
+            Sleep(100)
+            continue
+        }
+        
+        ; Increment cycle count at start of each cycle
+        sellCycleCount++
+        
+        if firstCycle {
+            firstCycle := false
+        } else {
+            SendDiscordWebhook("Digging - Cycle " . sellCycleCount, "Prospect V1.6 - Nicke and Timzzz", 0xFFFFFF)
+        }
+        
+        ; === DIGGING PHASE ===
+        digStartTime := A_TickCount
+        while (isMacroRunning && !isPaused && !IsBarFill()) {
+            if (A_TickCount - digStartTime) > 500 {
+                if isPaused || !isMacroRunning
+                    break
+                digStartTime := A_TickCount
+            }
+            
+            if !isAutoSelling {
+                DigPerfect()
+            }
+            Sleep(100)
+        }
+        
+        if !isMacroRunning || isPaused
+            continue
+        
+        Sleep(1000)
+        
+        ; === WALKING FORWARD PHASE ===
+        if !isAutoSelling && walkMs > 0 && !isPaused {
+            SendDiscordWebhook("Walking Forward", "Prospect V1.6 - Nicke and Timzzz", 0xFFFFFF)
+            ToolTip("🚶 Walking forward for " . walkMs . "ms...", 10, 30)
+            SendLocalizedKey("forward", "down")
+            
+            remainingTime := walkMs
+            while (remainingTime > 0 && !isPaused && isMacroRunning) {
+                sleepTime := Min(remainingTime, 100)
+                Sleep(sleepTime)
+                remainingTime -= sleepTime
+            }
+            
+            SendLocalizedKey("forward", "up")
+            ToolTip()
+        }
+        
+        if isPaused || !isMacroRunning
+            continue
+        
+        Sleep(300)
+        
+        ; === SHAKING PHASE ===
+        SendDiscordWebhook("Shaking", "Prospect V1.6 - Nicke and Timzzz", 0xFFFFFF)
+        shakeStartTime := A_TickCount
+        while (isMacroRunning && !isPaused && !IsBarEmpty()) {
+            if (A_TickCount - shakeStartTime) > 200 {
+                if isPaused || !isMacroRunning
+                    break
+                shakeStartTime := A_TickCount
+            }
+            
+            if !isAutoSelling {
+                FastShake()
+            }
+            Sleep(10)
+        }
+        
+        if !isMacroRunning || isPaused
+            continue
+        
+        Sleep(2500)
+        
+        ; === WALKING BACK PHASE ===
+        ; Use walkBackMs if set, otherwise fallback to walkMs for backward compatibility
+        walkBackDuration := walkBackMs > 0 ? walkBackMs : walkMs
+        if !isAutoSelling && walkBackDuration > 0 && !isPaused {
+            SendDiscordWebhook("Walking Back", "Prospect V1.6 - Nicke and Timzzz", 0xFFFFFF)
+            ToolTip("🔙 Walking back for " . walkBackDuration . "ms...", 10, 30)
+            SendLocalizedKey("back", "down")
+            
+            remainingTime := walkBackDuration
+            while (remainingTime > 0 && !isPaused && isMacroRunning) {
+                sleepTime := Min(remainingTime, 100)
+                Sleep(sleepTime)
+                remainingTime -= sleepTime
+            }
+            
+            SendLocalizedKey("back", "up")
+            ToolTip()
+        }
+        
+        if isPaused || !isMacroRunning
+            continue
+        
+        ; === AUTO-SELL PHASE (NEW DEDICATED SLOT) ===
+        if ShouldAutoSell() {
+            ToolTip("💰 Auto-sell time! Selling between cycles...", 10, 10)
+            Sleep(500)  ; Brief pause before selling
+            
+            if PerformAutoSell() {
+                Sleep(1000)  ; Additional pause after selling
+            }
+        }
+        
+        if isPaused || !isMacroRunning
+            continue
+        
+        Sleep(300)
+    }
+    
+    ReleaseAllInputs()
+    ToolTip()
+}
+
+DigPerfect() {
+    Click("down")
+    Sleep(digHoldMs)
+    Click("up")
+}
+
+FastShake() {
+    Click("down")
+}
+
+IsColorClose(color1, color2, tolerance := 20) {
+    r1 := (color1 >> 16) & 0xFF
+    g1 := (color1 >> 8) & 0xFF
+    b1 := color1 & 0xFF
+    r2 := (color2 >> 16) & 0xFF
+    g2 := (color2 >> 8) & 0xFF
+    b2 := color2 & 0xFF
+    return (Abs(r1 - r2) <= tolerance)
+        && (Abs(g1 - g2) <= tolerance)
+        && (Abs(b1 - b2) <= tolerance)
+}
+
+IsBarFill() {
+    global barRX, barRY, colorFill
+    try {
+        pixel := PixelGetColor(barRX, barRY, "RGB")
+        return IsColorClose(pixel, colorFill)
+    } catch Error {
+        return false
+    }
+}
+
+IsBarEmpty() {
+    global barLX, barLY, colorEmpty
+    try {
+        pixel := PixelGetColor(barLX, barLY, "RGB")
+        return IsColorClose(pixel, colorEmpty)
+    } catch Error {
+        return false
+    }
+}
+
+GetClickPosition(callback) {
+    ToolTip("🎯 Click desired position...", 10, 10)
+    KeyWait("LButton", "D")
+    MouseGetPos(&x, &y)
+    ToolTip()
+    callback(x, y)
+}
+
+SetLeftBar(x, y) {
+    global barLX, barLY
+    barLX := x
+    barLY := y
+    MsgBox("Position: " . x . ", " . y, "Left Bar Set", "OK")
+}
+
+SetRightBar(x, y) {
+    global barRX, barRY
+    barRX := x
+    barRY := y
+    MsgBox("Position: " . x . ", " . y, "Right Bar Set", "OK")
+}
+
+CaptureInventoryKey() {
+    global inventoryKey
+    ToolTip("⌨️ Press inventory key...", 10, 10)
+    key := GetSingleKey()
+    ToolTip()
+    if (key != "") {
+        inventoryKey := key
+        MsgBox("Inventory key: " . key, "Key Set", "OK")
+    }
+}
+
+; New function to capture UI Navigation key
+CaptureUINavigationKey() {
+    global uiNavigationKey
+    ToolTip("⌨️ Press UI Navigation key...", 10, 10)
+    key := GetSingleKey()
+    ToolTip()
+    if (key != "") {
+        uiNavigationKey := key
+        MsgBox("UI Navigation key: " . key, "Key Set", "OK")
+    }
+}
+
+GetSingleKey() {
+    try {
+        Input := InputHook("L1")
+        Input.VisibleNonText := false
+        Input.KeyOpt("{All}", "E")  ; Enable all keys including modifiers
+        Input.Start()
+        Input.Wait()
+        return Input.EndKey  ; This returns the actual key pressed, including Shift/Ctrl
+    } catch Error {
+        return ""
+    }
+}
+
+ShowGUI() {
+    global digHoldMs, walkMs, walkBackMs, inventoryKey
+    global autoSellEnabled, autoSellInterval, keyboardLayout, sellEveryNCycles
+    global useUINavigation, uiNavigationKey, uiNavVariant
+
+    myGui := Gui("+AlwaysOnTop -MaximizeBox", "V1.6 - Nicke and Timzzz")
+    myGui.BackColor := GUI_BG_COLOR
+    myGui.MarginX := 12
+    myGui.MarginY := 12
+    
+    headerText := myGui.Add("Text", "x12 y12 w330 h25 Center c" . Format("0x{:06X}", GUI_TEXT_COLOR), "⚒️ PROSPECT MACRO")
+    headerText.SetFont("s11 Bold", "Segoe UI")
+    
+    myGui.Add("Text", "x12 y40 w330 h1 Background" . Format("0x{:06X}", GUI_BORDER_COLOR))
+    
+    tabControl := myGui.Add("Tab3", "x12 y45 w330 h330 c" . Format("0x{:06X}", GUI_TEXT_COLOR), ["⚙️ Settings", "🛒 Auto Sell", "⌨️ Keys", "🔔 Discord"])
+
+    tabControl.UseTab(1)
+    
+    ; === DIGGING CONFIGURATION SECTION ===
+    myGui.Add("Text", "x30 y80 w100 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "⛏️ DIGGING SETUP")
+    
+    myGui.Add("Text", "x30 y100 w100 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "Perfect dig timing:")
+    inputField := myGui.Add("Edit", "x30 y118 w80 h22 Background" . Format("0x{:06X}", GUI_CONTROL_BG) . " c" . Format("0x{:06X}", GUI_TEXT_COLOR) . " vHoldTime Center", digHoldMs > 0 ? digHoldMs : "")
+    inputField.SetFont("s9 Bold", "Segoe UI")
+    
+    myGui.Add("Text", "x120 y121 w30 h15 c" . Format("0x{:06X}", 0xCCCCCC), "ms")
+    
+    statusText := myGui.Add("Text", "x160 y120 w100 h16 c" . Format("0x{:06X}", digHoldMs > 0 ? GUI_SUCCESS_COLOR : GUI_WARNING_COLOR), digHoldMs > 0 ? "✓ Configured" : "⚠ Required")
+    statusText.SetFont("s8 Bold", "Segoe UI")
+    
+    ; Timing help text
+    myGui.Add("Text", "x30 y145 w280 h15 c" . Format("0x{:06X}", 0x999999), "Recommended: 500-700ms (depends on your dig speed)")
+    
+    ; === MOVEMENT CONFIGURATION SECTION ===
+    ; Divider line
+    myGui.Add("Text", "x25 y165 w290 h1 Background" . Format("0x{:06X}", GUI_BORDER_COLOR))
+    
+    myGui.Add("Text", "x30 y175 w100 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "🚶 MOVEMENT SETUP")
+    
+    ; Walk Forward and Walk Back side by side
+    myGui.Add("Text", "x30 y195 w80 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "Walk Forward (ms):")
+    walkField := myGui.Add("Edit", "x30 y213 w80 h22 Background" . Format("0x{:06X}", GUI_CONTROL_BG) . " c" . Format("0x{:06X}", GUI_TEXT_COLOR) . " vWalkTime Center", walkMs > 0 ? walkMs : "")
+    walkField.SetFont("s9 Bold", "Segoe UI")
+    
+    myGui.Add("Text", "x120 y195 w80 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "Walk Back (ms):")
+    walkBackField := myGui.Add("Edit", "x120 y213 w80 h22 Background" . Format("0x{:06X}", GUI_CONTROL_BG) . " c" . Format("0x{:06X}", GUI_TEXT_COLOR) . " vWalkBackTime Center", walkBackMs > 0 ? walkBackMs : "")
+    walkBackField.SetFont("s9 Bold", "Segoe UI")
+    
+    ; Status indicators
+    walkStatusText := myGui.Add("Text", "x30 y240 w80 h16 c" . Format("0x{:06X}", walkMs > 0 ? GUI_SUCCESS_COLOR : GUI_WARNING_COLOR), walkMs > 0 ? "✓ Set" : "⚠ Not set")
+    walkStatusText.SetFont("s8", "Segoe UI")
+    
+    walkBackStatusText := myGui.Add("Text", "x120 y240 w80 h16 c" . Format("0x{:06X}", walkBackMs > 0 ? GUI_SUCCESS_COLOR : GUI_WARNING_COLOR), walkBackMs > 0 ? "✓ Set" : "⚠ Not set")
+    walkBackStatusText.SetFont("s8", "Segoe UI")
+    
+    ; === BAR DETECTION SECTION ===
+    ; Divider line  
+    myGui.Add("Text", "x25 y265 w290 h1 Background" . Format("0x{:06X}", GUI_BORDER_COLOR))
+    
+    myGui.Add("Text", "x30 y275 w100 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "🎯 BAR DETECTION")
+    
+    leftBarBtn := myGui.Add("Button", "x30 y295 w90 h24", "📍 Left Bar")
+    leftBarBtn.SetFont("s8", "Segoe UI")
+    leftBarBtn.OnEvent("Click", (*) => GetClickPosition(SetLeftBar))
+    
+    rightBarBtn := myGui.Add("Button", "x130 y295 w90 h24", "📍 Right Bar")
+    rightBarBtn.SetFont("s8", "Segoe UI")
+    rightBarBtn.OnEvent("Click", (*) => GetClickPosition(SetRightBar))
+    
+    ; Bar status indicator
+    barConfigured := (barLX > 0 && barLY > 0 && barRX > 0 && barRY > 0)
+    barColor := barConfigured ? GUI_SUCCESS_COLOR : GUI_WARNING_COLOR
+    barText := barConfigured ? "✓ Set!" : "⚠ Setup required"
+    barStatus := myGui.Add("Text", "x230 y298 w80 h18 c" . Format("0x{:06X}", barColor), barText)
+    barStatus.SetFont("s8", "Segoe UI")
+
+    ; === SAVE BUTTON ===
+    ; Final divider
+    myGui.Add("Text", "x25 y335 w290 h1 Background" . Format("0x{:06X}", GUI_BORDER_COLOR))
+    
+    saveBtn := myGui.Add("Button", "x30 y345 w280 h28 Background" . Format("0x{:06X}", GUI_SUCCESS_COLOR), "💾 SAVE SETTINGS")
+    saveBtn.SetFont("s9 Bold", "Segoe UI")
+    saveBtn.OnEvent("Click", (*) => SaveSettings(inputField, walkField, walkBackField))
+
+    tabControl.UseTab(2)
+    
+    ; === AUTO SELLING ===
+    ; Main toggle with compact status
+    autoSellCheckbox := myGui.Add("Checkbox", "x30 y80 w150 h22 c" . Format("0x{:06X}", GUI_TEXT_COLOR) . " vAutoSellCheck", "Auto Selling")
+    autoSellCheckbox.SetFont("s9 Bold", "Segoe UI")
+    autoSellCheckbox.Value := autoSellEnabled
+    
+    statusColor := autoSellEnabled ? GUI_SUCCESS_COLOR : 0x666666
+    statusText := autoSellEnabled ? "ON" : "OFF"
+    statusIndicator := myGui.Add("Text", "x190 y82 w50 h18 Center c" . Format("0x{:06X}", statusColor), statusText)
+    statusIndicator.SetFont("s8 Bold", "Segoe UI")
+    
+    ; Divider
+    myGui.Add("Text", "x25 y110 w290 h1 Background" . Format("0x{:06X}", GUI_BORDER_COLOR))
+    
+    ; === UI NAVIGATION SETTINGS ===
+    myGui.Add("Text", "x30 y125 w150 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "🧭 UI Navigation (Required)")
+    
+    ; UI Navigation key setting
+    myGui.Add("Text", "x30 y150 w60 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "🔑 UI Key:")
+    
+    currentUIKeyText := myGui.Add("Text", "x95 y147 w30 h22 Center Border c" . Format("0x{:06X}", GUI_ACCENT_COLOR) . " Background" . Format("0x{:06X}", GUI_CONTROL_BG), uiNavigationKey)
+    currentUIKeyText.SetFont("s10 Bold", "Consolas")
+    
+    setUIKeyBtn := myGui.Add("Button", "x135 y147 w60 h22", "Change")
+    setUIKeyBtn.SetFont("s8", "Segoe UI")
+    setUIKeyBtn.OnEvent("Click", (*) => CaptureUINavigationKey())
+    
+    ; Variant selection
+    myGui.Add("Text", "x30 y180 w60 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "🎯 Variant:")
+    
+    variant1Radio := myGui.Add("Radio", "x95 y180 w60 h18 c" . Format("0x{:06X}", GUI_TEXT_COLOR) . " vVariant1", "Variant 1")
+    variant1Radio.SetFont("s8", "Segoe UI")
+    variant1Radio.Value := (uiNavVariant = 1)
+    
+    variant2Radio := myGui.Add("Radio", "x160 y180 w60 h18 c" . Format("0x{:06X}", GUI_TEXT_COLOR) . " vVariant2", "Variant 2")
+    variant2Radio.SetFont("s8", "Segoe UI")
+    variant2Radio.Value := (uiNavVariant = 2)
+    
+    ; === FREQUENCY ===
+    myGui.Add("Text", "x25 y210 w290 h1 Background" . Format("0x{:06X}", GUI_BORDER_COLOR))
+    
+    myGui.Add("Text", "x30 y225 w80 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "⏱️ Frequency:")
+    
+    myGui.Add("Text", "x30 y245 w40 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "Every")
+    cycleField := myGui.Add("Edit", "x70 y242 w40 h22 Background" . Format("0x{:06X}", GUI_CONTROL_BG) . " c" . Format("0x{:06X}", GUI_TEXT_COLOR) . " vCycleTime Center", sellEveryNCycles)
+    cycleField.SetFont("s9 Bold", "Segoe UI")
+    
+    myGui.Add("Text", "x120 y245 w50 h15 c" . Format("0x{:06X}", 0xCCCCCC), "cycles")
+    
+    ; === INVENTORY KEY ===
+    myGui.Add("Text", "x200 y225 w80 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "🔑 Inventory:")
+    
+    currentKeyText := myGui.Add("Text", "x200 y242 w30 h22 Center Border c" . Format("0x{:06X}", GUI_ACCENT_COLOR) . " Background" . Format("0x{:06X}", GUI_CONTROL_BG), inventoryKey)
+    currentKeyText.SetFont("s10 Bold", "Consolas")
+    
+    setKeyBtn := myGui.Add("Button", "x240 y242 w60 h22", "Change")
+    setKeyBtn.SetFont("s8", "Segoe UI")
+    setKeyBtn.OnEvent("Click", (*) => CaptureInventoryKey())
+    
+    ; === SAVE BUTTON ===
+    myGui.Add("Text", "x25 y275 w290 h1 Background" . Format("0x{:06X}", GUI_BORDER_COLOR))
+    
+    saveAutoSellBtn := myGui.Add("Button", "x30 y285 w280 h28 Background" . Format("0x{:06X}", GUI_ACCENT_COLOR), "💾 SAVE AUTO SELLING")
+    saveAutoSellBtn.SetFont("s9 Bold", "Segoe UI")
+    saveAutoSellBtn.OnEvent("Click", (*) => SaveAutoSellSettings(autoSellCheckbox, cycleField, variant1Radio, variant2Radio))
+
+    tabControl.UseTab(3)
+    
+    myGui.Add("Text", "x25 y75 w50 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "Layout:")
+    layoutText := myGui.Add("Text", "x25 y92 w200 h16 c" . Format("0x{:06X}", GUI_ACCENT_COLOR), keyboardLayout)
+    layoutText.SetFont("s7 Bold", "Segoe UI")
+    
+    myGui.Add("Text", "x25 y120 w40 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "Fwd:")
+    forwardKeyText := myGui.Add("Text", "x70 y120 w25 h18 Center Border c" . Format("0x{:06X}", GUI_SUCCESS_COLOR) . " Background" . Format("0x{:06X}", GUI_CONTROL_BG), GetLocalizedKey("forward"))
+    forwardKeyText.SetFont("s8 Bold", "Consolas")
+    
+    myGui.Add("Text", "x110 y120 w35 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "Back:")
+    backKeyText := myGui.Add("Text", "x150 y120 w25 h18 Center Border c" . Format("0x{:06X}", GUI_SUCCESS_COLOR) . " Background" . Format("0x{:06X}", GUI_CONTROL_BG), GetLocalizedKey("back"))
+    backKeyText.SetFont("s8 Bold", "Consolas")
+    
+    myGui.Add("Text", "x25 y145 w35 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "Left:")
+    leftKeyText := myGui.Add("Text", "x70 y145 w25 h18 Center Border c" . Format("0x{:06X}", GUI_SUCCESS_COLOR) . " Background" . Format("0x{:06X}", GUI_CONTROL_BG), GetLocalizedKey("left"))
+    leftKeyText.SetFont("s8 Bold", "Consolas")
+    
+    myGui.Add("Text", "x110 y145 w35 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "Right:")
+    rightKeyText := myGui.Add("Text", "x150 y145 w25 h18 Center Border c" . Format("0x{:06X}", GUI_SUCCESS_COLOR) . " Background" . Format("0x{:06X}", GUI_CONTROL_BG), GetLocalizedKey("right"))
+    rightKeyText.SetFont("s8 Bold", "Consolas")
+    
+    redetectBtn := myGui.Add("Button", "x80 y175 w120 h22", "🔄 Re-detect Layout")
+    redetectBtn.SetFont("s8", "Segoe UI")
+    redetectBtn.OnEvent("Click", (*) => (DetectKeyboardLayout(), myGui.Destroy(), ShowGUI()))
+
+    tabControl.UseTab(4)
+    
+    myGui.Add("Text", "x25 y75 w150 h15 c" . Format("0x{:06X}", GUI_TEXT_COLOR), "Discord Webhook URL:")
+    webhookField := myGui.Add("Edit", "x25 y92 w280 h20 Background" . Format("0x{:06X}", GUI_CONTROL_BG) . " c" . Format("0x{:06X}", GUI_TEXT_COLOR) . " -Multi vWebhookUrl", IniRead(settingsFile, "Discord", "webhook", ""))
+    webhookField.SetFont("s7", "Segoe UI")
+    
+    webhookEnabledCheckbox := myGui.Add("Checkbox", "x25 y122 w150 h20 c" . Format("0x{:06X}", GUI_TEXT_COLOR) . " vWebhookEnabledCheck", "🔔 Enable Webhook")
+    webhookEnabledCheckbox.SetFont("s8", "Segoe UI")
+    webhookEnabledCheckbox.Value := IniRead(settingsFile, "Discord", "enabled", 1)
+    
+    webhookStatus := myGui.Add("Text", "x25 y147 w200 h16 c" . Format("0x{:06X}", (IniRead(settingsFile, "Discord", "webhook", "") != "") ? GUI_SUCCESS_COLOR : GUI_WARNING_COLOR), 
+                               (IniRead(settingsFile, "Discord", "webhook", "") != "") ? "✓ Webhook configured" : "⚠ No webhook set")
+    webhookStatus.SetFont("s7", "Segoe UI")
+    
+    myGui.Add("Text", "x25 y170 w280 h30 c" . Format("0x{:06X}", 0x999999), "Sends notifications for: Start, Pause, Resume, Auto-sell, Phase changes, Exit")
+    
+    saveWebhookBtn := myGui.Add("Button", "x25 y210 w120 h25 Background" . Format("0x{:06X}", GUI_ACCENT_COLOR), "💾 Save Webhook")
+    saveWebhookBtn.SetFont("s8 Bold", "Segoe UI")
+    saveWebhookBtn.OnEvent("Click", (*) => SaveWebhookSetting(webhookField, webhookEnabledCheckbox))
+
+    tabControl.UseTab()
+    
+    myGui.Add("Text", "x12 y385 w330 h1 Background" . Format("0x{:06X}", GUI_BORDER_COLOR))
+    
+    statusIndicator := myGui.Add("Text", "x12 y395 w330 h16 Center c" . Format("0x{:06X}", isMacroRunning ? (isPaused ? GUI_WARNING_COLOR : GUI_SUCCESS_COLOR) : GUI_TEXT_COLOR), 
+                                GetStatusText())
+    statusIndicator.SetFont("s8 Bold", "Segoe UI")
+    
+    startBtn := myGui.Add("Button", "x12 y420 w100 h28 Background" . Format("0x{:06X}", GUI_SUCCESS_COLOR), "▶️ Start [F1]")
+    startBtn.SetFont("s8 Bold", "Segoe UI")
+    startBtn.OnEvent("Click", (*) => StartMacro())
+    
+    pauseBtn := myGui.Add("Button", "x122 y420 w100 h28", isPaused ? "▶️ Resume [F2]" : "⏸️ Pause [F2]")
+    pauseBtn.SetFont("s8", "Segoe UI")
+    pauseBtn.OnEvent("Click", (*) => TogglePause())
+    
+    exitBtn := myGui.Add("Button", "x232 y420 w100 h28 Background" . Format("0x{:06X}", GUI_DANGER_COLOR), "🚪 Exit [F3]")
+    exitBtn.SetFont("s8", "Segoe UI")
+    exitBtn.OnEvent("Click", (*) => ExitScript())
+    
+    hotkeyInfo := myGui.Add("Text", "x12 y455 w330 h16 Center c" . Format("0x{:06X}", 0x999999), "💡 F1=Start • F2=Pause • F3=Exit")
+    hotkeyInfo.SetFont("s7", "Segoe UI")
+
+    myGui.Show("w354 h480")
+    
+    SetTimer(UpdateGUIStatus, 1000)
+    
+    return myGui
+}
+
+SaveWebhookSetting(webhookField, webhookEnabledCheckbox) {
+    global settingsFile
+    webhookUrl := Trim(webhookField.Value)
+    webhookEnabled := webhookEnabledCheckbox.Value
+    
+    try {
+        IniWrite(webhookUrl, settingsFile, "Discord", "webhook")
+        IniWrite(webhookEnabled, settingsFile, "Discord", "enabled")
+        MsgBox("Discord webhook settings saved!", "Success", "OK")
+    } catch Error as e {
+        MsgBox("Failed to save webhook settings: " . e.message, "Error", "OK")
+    }
+}
+
+GetStatusText() {
+    global isMacroRunning, isPaused, isAutoSelling
+    
+    if !isMacroRunning {
+        return "🔴 Stopped - Ready"
+    } else if isPaused {
+        return "🟡 Paused - F2 to Resume"
+    } else if isAutoSelling {
+        return "🟠 Auto-Selling..."
+    } else {
+        return "🟢 Running - Active"
+    }
+}
+
+UpdateGUIStatus() {
+    static lastStatus := ""
+    currentStatus := GetStatusText()
+    
+    if (lastStatus != currentStatus) {
+        lastStatus := currentStatus
+    }
+}
+
+SaveSettings(inputField, walkField, walkBackField) {
+    global digHoldMs, walkMs, walkBackMs
+    newTimeText := Trim(inputField.Value)
+    newWalkText := Trim(walkField.Value)
+    newWalkBackText := Trim(walkBackField.Value)
+    
+    if (newTimeText = "") {
+        newTimeText := "0"
+    }
+    if (newWalkText = "") {
+        newWalkText := "0"
+    }
+    if (newWalkBackText = "") {
+        newWalkBackText := "0"
+    }
+    
+    if newTimeText ~= "^\d+$" && newWalkText ~= "^\d+$" && newWalkBackText ~= "^\d+$" {
+        newTime := Integer(newTimeText)
+        newWalk := Integer(newWalkText)
+        newWalkBack := Integer(newWalkBackText)
+        if newTime > 0 && newWalk >= 0 && newWalkBack >= 0 {
+            digHoldMs := newTime
+            walkMs := newWalk
+            walkBackMs := newWalkBack
+            SaveToFile()
+            return
+        }
+    }
+    MsgBox("Enter valid numbers. Dig > 0, walk forward ≥ 0, walk back ≥ 0", "Error", "OK")
+}
+
+SaveAutoSellSettings(autoSellCheckbox, cycleField, variant1Radio, variant2Radio) {
+    global autoSellEnabled, autoSellInterval, sellEveryNCycles, useUINavigation, uiNavVariant
+    newCycleText := Trim(cycleField.Value)
+    if newCycleText ~= "^\d+$" {
+        newCycles := Integer(newCycleText)
+        if newCycles > 0 {
+            autoSellEnabled := autoSellCheckbox.Value
+            sellEveryNCycles := newCycles
+            uiNavVariant := variant1Radio.Value ? 1 : 2
+            
+            ; UI Navigation is mandatory when auto-selling is enabled
+            useUINavigation := autoSellEnabled
+            
+            autoSellInterval := 10000  ; Keep for compatibility but not used
+            SaveToFile()
+            
+            statusText := autoSellEnabled ? "Enabled with UI Navigation (Variant " . uiNavVariant . ")" : "Disabled"
+            MsgBox("Auto-sell settings saved!`n`nStatus: " . statusText . "`nFrequency: Every " . sellEveryNCycles . " cycles", "Success", "OK")
+            return
+        }
+    }
+    MsgBox("Enter valid cycle number (e.g., 5 for every 5 cycles)", "Error", "OK")
+}
+
+DetectKeyboardLayout()
+LoadSettings()
+ShowGUI()
